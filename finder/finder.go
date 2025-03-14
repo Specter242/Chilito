@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PuerkitoBio/goquery"
 )
@@ -242,54 +245,281 @@ func (f *ChilitoBurritoFinder) getPlaceDetails(placeID string) (placeDetails, er
 
 // getStoreID gets the Taco Bell store ID which is needed for menu checking
 func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, error) {
-	// This is a simplified version. In a real app, we'd parse the address
-	// and use the Taco Bell store locator API to find the store ID
+	// Format the address for URL query
+	formattedAddress := url.QueryEscape(location.Address)
+	locationURL := fmt.Sprintf("https://www.tacobell.com/locations/search?q=%s", formattedAddress)
 
-	// For demo purposes, this would locate the store on tacobell.com
-	// and extract the store ID from the URL or page content
+	// Create HTTP client with timeout
+	client := &http.Client{
+		Timeout: 15 * time.Second,
+	}
 
-	// Example: https://www.tacobell.com/locations/search?q={address}
+	// Create a request with headers to mimic a browser
+	req, err := http.NewRequest("GET", locationURL, nil)
+	if err != nil {
+		return "", err
+	}
 
-	// For now, return a placeholder
-	return "store-" + location.PlaceID, nil
+	// Set common headers to avoid being blocked
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+	req.Header.Set("Accept-Language", "en-US,en;q=0.5")
+
+	// Execute request
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("error accessing Taco Bell location search: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("received non-200 response: %d", resp.StatusCode)
+	}
+
+	// Parse HTML
+	doc, err := goquery.NewDocumentFromReader(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("error parsing HTML: %w", err)
+	}
+
+	// Look for store ID in several possible locations
+	var storeID string
+
+	// First approach: Look for data attributes in location cards
+	doc.Find(".location-card, .store-card, [data-store-id]").Each(func(i int, s *goquery.Selection) {
+		if id, exists := s.Attr("data-store-id"); exists && storeID == "" {
+			// Check if address matches approximately
+			cardAddress := s.Find(".address, .location-address").Text()
+			if similarAddresses(cardAddress, location.Address) {
+				storeID = id
+			}
+		}
+	})
+
+	// Second approach: Look for store ID in script tags
+	if storeID == "" {
+		doc.Find("script").Each(func(i int, s *goquery.Selection) {
+			script := s.Text()
+			if strings.Contains(script, "storeId") || strings.Contains(script, "store_id") {
+				// Use regex to find store ID
+				re := regexp.MustCompile(`(?:storeId|store_id)[\s:"'=]+(\d+)`)
+				matches := re.FindStringSubmatch(script)
+				if len(matches) >= 2 {
+					storeID = matches[1]
+				}
+			}
+		})
+	}
+
+	// Third approach: Look for it in URLs on the page
+	if storeID == "" {
+		doc.Find("a[href*='store='], a[href*='storeId=']").Each(func(i int, s *goquery.Selection) {
+			href, exists := s.Attr("href")
+			if !exists {
+				return
+			}
+
+			// Extract store ID from URL
+			re := regexp.MustCompile(`(?:store|storeId)=(\d+)`)
+			matches := re.FindStringSubmatch(href)
+			if len(matches) >= 2 {
+				storeID = matches[1]
+			}
+		})
+	}
+
+	// If we still don't have a store ID, use the Place ID as a fallback
+	if storeID == "" {
+		fmt.Printf("Warning: Could not find store ID for %s, using fallback\n", location.Name)
+		storeID = location.PlaceID
+	}
+
+	return storeID, nil
+}
+
+// similarAddresses checks if two addresses are likely the same location
+func similarAddresses(addr1, addr2 string) bool {
+	// Normalize addresses: remove punctuation, extra spaces, and convert to lowercase
+	normalize := func(s string) string {
+		s = strings.ToLower(s)
+		s = regexp.MustCompile(`[^\w\s]`).ReplaceAllString(s, " ")
+		s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+		return strings.TrimSpace(s)
+	}
+
+	addr1Norm := normalize(addr1)
+	addr2Norm := normalize(addr2)
+
+	// If one is contained in the other, consider them similar
+	if strings.Contains(addr1Norm, addr2Norm) || strings.Contains(addr2Norm, addr1Norm) {
+		return true
+	}
+
+	// Compare important parts (street number, name, city)
+	words1 := strings.Fields(addr1Norm)
+	words2 := strings.Fields(addr2Norm)
+
+	matches := 0
+	totalWords := math.Max(float64(len(words1)), float64(len(words2)))
+
+	for _, w1 := range words1 {
+		if len(w1) < 2 {
+			continue // Skip very short words
+		}
+		for _, w2 := range words2 {
+			if w1 == w2 || (len(w1) > 4 && strings.Contains(w2, w1)) {
+				matches++
+				break
+			}
+		}
+	}
+
+	// If at least 60% of words match, consider them similar
+	return float64(matches)/totalWords > 0.6
 }
 
 // checkForChilitoBurrito checks if a location has the Chili Cheese Burrito
 func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation) (bool, error) {
-	// In a real application, we would:
-	// 1. Access the Taco Bell menu API for this store ID
-	// 2. Or scrape the menu from the website
-	// 3. Search for "Chili Cheese Burrito" or "Chilito"
-
-	// Example URL: https://www.tacobell.com/food/menu/{storeID}
-
-	// For demonstration, we'll use a simulated implementation
-	endpoint := fmt.Sprintf("https://www.tacobell.com/food/menu/%s", location.StoreID)
-
-	resp, err := http.Get(endpoint)
-	if err != nil {
-		return false, err
-	}
-	defer resp.Body.Close()
-
-	// In a real implementation, we'd parse the HTML and look for the Chilito
-	doc, err := goquery.NewDocumentFromReader(resp.Body)
-	if err != nil {
-		return false, err
+	// URLs to check for menu
+	urls := []string{
+		fmt.Sprintf("https://www.tacobell.com/food/menu?store=%s", location.StoreID),
+		fmt.Sprintf("https://www.tacobell.com/food/burritos?store=%s", location.StoreID),
+		fmt.Sprintf("https://www.tacobell.com/food/specialties?store=%s", location.StoreID),
+		// URL for the "Chili Cheese" page if it exists
+		fmt.Sprintf("https://www.tacobell.com/food/specialty/chili-cheese?store=%s", location.StoreID),
 	}
 
-	// Search for Chili Cheese Burrito in the menu items
-	// This is a placeholder implementation
-	found := false
-	doc.Find(".menu-item").Each(func(i int, s *goquery.Selection) {
-		itemName := s.Find(".item-name").Text()
-		if strings.Contains(strings.ToLower(itemName), "chili cheese burrito") ||
-			strings.Contains(strings.ToLower(itemName), "chilito") {
-			found = true
+	// Terms that indicate the Chilito/Chili Cheese Burrito
+	searchTerms := []string{
+		"chili cheese burrito",
+		"chilito",
+		"chili burrito",
+		"ccb",
+		"chili cheese wrap",
+	}
+
+	// Create client
+	client := &http.Client{
+		Timeout: 20 * time.Second,
+	}
+
+	// Try each URL
+	for _, menuURL := range urls {
+		// Try up to 3 times per URL
+		var resp *http.Response
+		var err error
+
+		for attempt := 0; attempt < 3; attempt++ {
+			req, err := http.NewRequest("GET", menuURL, nil)
+			if err != nil {
+				continue
+			}
+
+			// Set headers to appear like a normal browser
+			req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+			req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8")
+
+			resp, err = client.Do(req)
+			if err == nil && resp.StatusCode == http.StatusOK {
+				break
+			}
+
+			if resp != nil {
+				resp.Body.Close()
+			}
+
+			// Wait before retrying
+			time.Sleep(time.Duration(attempt+1) * time.Second)
 		}
-	})
 
-	return found, nil
+		if err != nil || resp == nil {
+			fmt.Printf("Failed to access %s after multiple attempts\n", menuURL)
+			continue
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			resp.Body.Close()
+			fmt.Printf("Received status %d for %s\n", resp.StatusCode, menuURL)
+			continue
+		}
+
+		// Parse HTML
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		resp.Body.Close()
+
+		if err != nil {
+			fmt.Printf("Error parsing HTML: %v\n", err)
+			continue
+		}
+
+		// Look for menu items with the target terms
+		found := false
+
+		// Check specific menu item selectors
+		selectors := []string{
+			".menu-item", ".item-tile", ".product-name", ".product-title",
+			".food-item", ".item-name", ".menu-product", ".product-card",
+		}
+
+		for _, selector := range selectors {
+			doc.Find(selector).Each(func(i int, s *goquery.Selection) {
+				itemText := strings.ToLower(s.Text())
+				for _, term := range searchTerms {
+					if strings.Contains(itemText, term) {
+						found = true
+						return
+					}
+				}
+			})
+
+			if found {
+				break
+			}
+		}
+
+		// If found in specific selectors, return true
+		if found {
+			return true, nil
+		}
+
+		// As a fallback, check the entire page content
+		pageContent := strings.ToLower(doc.Text())
+		for _, term := range searchTerms {
+			if strings.Contains(pageContent, term) {
+				// Look at surrounding text to confirm it's a menu item
+				re := regexp.MustCompile(fmt.Sprintf(`.{0,50}%s.{0,50}`, regexp.QuoteMeta(term)))
+				matches := re.FindAllString(pageContent, -1)
+
+				for _, match := range matches {
+					// If the surrounding text suggests it's a menu item (has price, description, etc.)
+					if strings.Contains(match, "price") ||
+						strings.Contains(match, "$") ||
+						strings.Contains(match, "order") ||
+						strings.Contains(match, "menu") {
+						return true, nil
+					}
+				}
+			}
+		}
+	}
+
+	// Alternative approach: check the "Chilito Finder" website (if it exists)
+	// This is a hypothetical site that might track Chili Cheese Burrito availability
+	resp, err := http.Get(fmt.Sprintf("https://chilicheeseburrito.com/locations?id=%s", location.StoreID))
+	if err == nil && resp.StatusCode == http.StatusOK {
+		doc, err := goquery.NewDocumentFromReader(resp.Body)
+		resp.Body.Close()
+
+		if err == nil {
+			// Look for indications this location has the Chilito
+			available := strings.Contains(strings.ToLower(doc.Text()), "available")
+			if available {
+				return true, nil
+			}
+		}
+	}
+
+	return false, nil
 }
 
 // haversineDistance calculates the distance between two points in kilometers

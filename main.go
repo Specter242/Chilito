@@ -11,14 +11,13 @@ import (
 func main() {
 	var address string
 	var radius int
-	var apiKey string
+	const apiKey = "AIzaSyAiMObdV5w-zFahCX-8kelmElJqkSgEWjU"
 
 	flag.StringVar(&address, "address", "", "Address to search from (required)")
 	flag.IntVar(&radius, "radius", 50000, "Search radius in meters (default 50km)")
-	flag.StringVar(&apiKey, "api-key", "", "Google Places API key (required)")
 	flag.Parse()
 
-	if address == "" || apiKey == "" {
+	if address == "" {
 		flag.Usage()
 		return
 	}
