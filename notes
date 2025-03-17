@@ -1,10 +1,5 @@
-Some important considerations:
-
-This is a simplified implementation. In a real application, you'd need to:
-
 Handle proper authentication with the Taco Bell website/API
 Implement proper HTML parsing of the menu
-Add error handling and retries
 Consider caching results to avoid unnecessary API calls
 You'll need a Google API key with Places API enabled to use this application.
 

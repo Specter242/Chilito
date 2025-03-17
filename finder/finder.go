@@ -27,6 +27,11 @@ type TacoBellLocation struct {
 	StoreID     string
 }
 
+// PlaceDetails stores additional details about a place
+type PlaceDetails struct {
+	PhoneNumber string
+}
+
 // ChilitoBurritoFinder manages searching for the Chilito Burrito
 type ChilitoBurritoFinder struct {
 	apiKey   string
@@ -393,43 +398,64 @@ func (f *ChilitoBurritoFinder) mapboxGeocode(address string) (float64, float64, 
 
 // hardcodedFallbackGeocode provides coordinates for common locations
 func (f *ChilitoBurritoFinder) hardcodedFallbackGeocode(address string) (float64, float64, error) {
-	// Normalize the address for comparison
-	normalizedAddr := strings.ToLower(address)
-	normalizedAddr = regexp.MustCompile(`[^\w\s]`).ReplaceAllString(normalizedAddr, "")
-	normalizedAddr = regexp.MustCompile(`\s+`).ReplaceAllString(normalizedAddr, " ")
-
-	// Common locations map
-	locations := map[string][]float64{
-		"alpharetta ga": {34.0754, -84.2941},
-		"910 deerfield crossing dr alpharetta ga 30004": {34.0917, -84.2800},
-		"1000 davis rd w fairmount ga 30139":            {34.4369, -84.7650},
-		"holland michigan":                              {42.7876, -86.1090},
-	}
-
-	// Look for exact match first
-	if coords, exists := locations[normalizedAddr]; exists {
-		fmt.Printf("Found exact match in hardcoded locations: %f, %f\n", coords[0], coords[1])
-		return coords[0], coords[1], nil
-	}
-
-	// Look for partial matches
-	for addr, coords := range locations {
-		if strings.Contains(normalizedAddr, addr) || strings.Contains(addr, normalizedAddr) {
-			fmt.Printf("Found partial match in hardcoded locations: %f, %f\n", coords[0], coords[1])
-			return coords[0], coords[1], nil
-		}
-	}
-
-	return 0, 0, errors.New("address not found in hardcoded locations")
-}
-
-// backupGeocoding is kept for backward compatibility
-func (f *ChilitoBurritoFinder) backupGeocoding(address string) (float64, float64, error) {
-	return f.openStreetMapGeocode(address)
+	// This method now returns an error since we've removed hardcoded locations
+	return 0, 0, errors.New("no hardcoded locations available")
 }
 
 // findTacoBellLocations finds Taco Bell restaurants near coordinates
 func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius int) ([]TacoBellLocation, error) {
+	fmt.Printf("Searching for Taco Bell locations near coordinates: %f, %f (radius: %d meters)\n",
+		lat, lng, radius)
+
+	// First try the standard Google Places API search
+	locations, err := f.googlePlacesSearch(lat, lng, radius)
+	if err != nil {
+		fmt.Printf("Google Places API search error: %v\n", err)
+		// Don't return error yet, try fallback
+	}
+
+	// If we found locations, return them
+	if len(locations) > 0 {
+		fmt.Printf("Found %d Taco Bell locations using Google Places API\n", len(locations))
+		return locations, nil
+	}
+
+	// Fallback: try text search API which has different matching algorithms
+	fmt.Println("No locations found with Nearby Search API, trying Text Search API...")
+	locations, err = f.googleTextSearch(lat, lng, radius)
+	if err != nil {
+		fmt.Printf("Google Text Search API error: %v\n", err)
+	}
+
+	// If still no results, try OpenStreetMap as a last resort
+	if len(locations) == 0 {
+		fmt.Println("No locations found with Google APIs, trying OpenStreetMap...")
+		locations, err = f.openStreetMapSearch(lat, lng, radius)
+		if err != nil {
+			fmt.Printf("OpenStreetMap search error: %v\n", err)
+		}
+	}
+
+	// For fallbacks, attempt with multiple search terms
+	if len(locations) == 0 {
+		fmt.Println("Trying fallback search with alternative terms...")
+		for _, term := range []string{"Taco Bell", "TacoBell", "taco bell restaurant"} {
+			locs, _ := f.googleTextSearch(lat, lng, radius*2, term)
+			locations = append(locations, locs...)
+		}
+	}
+
+	fmt.Printf("Total Taco Bell locations found: %d\n", len(locations))
+	return locations, nil
+}
+
+// isNearLocation checks if coordinates are within a radius of another location
+//func isNearLocation(lat1, lng1, lat2, lng2 float64, radiusKm float64) bool {
+//	return haversineDistance(lat1, lng1, lat2, lng2) <= radiusKm
+//}
+
+// googlePlacesSearch is the original Google Places API nearby search
+func (f *ChilitoBurritoFinder) googlePlacesSearch(lat, lng float64, radius int) ([]TacoBellLocation, error) {
 	endpoint := "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
 
 	params := url.Values{}
@@ -452,14 +478,28 @@ func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius in
 			requestURL += "&pagetoken=" + pagetoken
 		}
 
+		fmt.Printf("Making Places API request: %s\n",
+			strings.Replace(requestURL, f.apiKey, "REDACTED", -1))
+
 		// Use the client that might be authenticated
 		resp, err := f.client.Get(requestURL)
 		if err != nil {
 			return nil, err
 		}
 
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		fmt.Printf("Places API response status: %d\n", resp.StatusCode)
+		if resp.StatusCode != http.StatusOK {
+			fmt.Printf("Response body: %s\n", string(body))
+			return nil, fmt.Errorf("places API returned status code %d", resp.StatusCode)
+		}
+
 		var result struct {
-			Results []struct {
+			Status       string `json:"status"`
+			ErrorMessage string `json:"error_message,omitempty"`
+			Results      []struct {
 				PlaceID  string `json:"place_id"`
 				Name     string `json:"name"`
 				Vicinity string `json:"vicinity"` // address
@@ -473,12 +513,19 @@ func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius in
 			NextPageToken string `json:"next_page_token"`
 		}
 
-		body, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
 		if err := json.Unmarshal(body, &result); err != nil {
 			return nil, err
 		}
+
+		// Check API status
+		if result.Status != "OK" && result.Status != "ZERO_RESULTS" {
+			if result.ErrorMessage != "" {
+				return nil, fmt.Errorf("places API error: %s - %s", result.Status, result.ErrorMessage)
+			}
+			return nil, fmt.Errorf("places API error: %s", result.Status)
+		}
+
+		fmt.Printf("Found %d results in current page\n", len(result.Results))
 
 		for _, place := range result.Results {
 			if strings.Contains(strings.ToLower(place.Name), "taco bell") {
@@ -499,7 +546,11 @@ func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius in
 					Address:     place.Vicinity,
 					Distance:    distance,
 					PhoneNumber: details.PhoneNumber,
+					StoreID:     place.PlaceID, // Use PlaceID as fallback StoreID
 				})
+
+				fmt.Printf("Found Taco Bell: %s at %s (%.2f km)\n",
+					place.Name, place.Vicinity, distance)
 			}
 		}
 
@@ -508,19 +559,215 @@ func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius in
 			break
 		}
 
-		// Need to wait a bit before using the page token
-		// We could implement a short delay here if needed
+		// IMPORTANT: Wait between page token requests (required by API)
+		fmt.Println("Waiting for next page token to become valid...")
+		time.Sleep(2 * time.Second)
 	}
 
 	return locations, nil
 }
 
-type placeDetails struct {
-	PhoneNumber string
+// googleTextSearch uses the Text Search API as an alternative to Nearby Search
+func (f *ChilitoBurritoFinder) googleTextSearch(lat, lng float64, radius int, query ...string) ([]TacoBellLocation, error) {
+	endpoint := "https://maps.googleapis.com/maps/api/place/textsearch/json"
+
+	// Default search term
+	searchTerm := "Taco Bell"
+	if len(query) > 0 && query[0] != "" {
+		searchTerm = query[0]
+	}
+
+	params := url.Values{}
+	params.Add("query", searchTerm)
+	params.Add("location", fmt.Sprintf("%f,%f", lat, lng))
+	params.Add("radius", strconv.Itoa(radius))
+
+	// Only add API key if not using OAuth
+	if !f.useOAuth {
+		params.Add("key", f.apiKey)
+	}
+
+	requestURL := endpoint + "?" + params.Encode()
+	fmt.Printf("Making Text Search API request: %s\n",
+		strings.Replace(requestURL, f.apiKey, "REDACTED", -1))
+
+	resp, err := f.client.Get(requestURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("text search API returned status code %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Results []struct {
+			PlaceID          string `json:"place_id"`
+			Name             string `json:"name"`
+			FormattedAddress string `json:"formatted_address"`
+			Geometry         struct {
+				Location struct {
+					Lat float64 `json:"lat"`
+					Lng float64 `json:"lng"`
+				} `json:"location"`
+			} `json:"geometry"`
+		} `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var locations []TacoBellLocation
+	for _, place := range result.Results {
+		if strings.Contains(strings.ToLower(place.Name), "taco bell") {
+			// Calculate distance
+			distance := haversineDistance(lat, lng,
+				place.Geometry.Location.Lat,
+				place.Geometry.Location.Lng)
+
+			// Get additional details
+			details, _ := f.getPlaceDetails(place.PlaceID)
+
+			locations = append(locations, TacoBellLocation{
+				PlaceID:     place.PlaceID,
+				Name:        place.Name,
+				Address:     place.FormattedAddress,
+				Distance:    distance,
+				PhoneNumber: details.PhoneNumber,
+			})
+
+			fmt.Printf("Found Taco Bell (text search): %s at %s (%.2f km)\n",
+				place.Name, place.FormattedAddress, distance)
+		}
+	}
+
+	return locations, nil
+}
+
+// openStreetMapSearch searches for Taco Bell locations using OSM Overpass API
+func (f *ChilitoBurritoFinder) openStreetMapSearch(lat, lng float64, radius int) ([]TacoBellLocation, error) {
+	// Convert radius from meters to degrees (approximate)
+	radiusDegrees := float64(radius) / 111000.0 // 1 degree is roughly 111 km
+
+	// Build Overpass query to find Taco Bell locations
+	bbox := fmt.Sprintf("%.6f,%.6f,%.6f,%.6f",
+		lng-radiusDegrees, lat-radiusDegrees,
+		lng+radiusDegrees, lat+radiusDegrees)
+
+	query := fmt.Sprintf(`[out:json];
+		(
+		  node["amenity"="fast_food"]["name"~"Taco Bell",i](%s);
+		  way["amenity"="fast_food"]["name"~"Taco Bell",i](%s);
+		  relation["amenity"="fast_food"]["name"~"Taco Bell",i](%s);
+		);
+		out center;`, bbox, bbox, bbox)
+
+	// URL encode the query
+	encoded := url.QueryEscape(query)
+	requestURL := "https://overpass-api.de/api/interpreter?data=" + encoded
+
+	fmt.Println("Making OpenStreetMap Overpass API request...")
+
+	client := http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Get(requestURL)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("overpass API returned status %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Elements []struct {
+			Type string `json:"type"`
+			ID   int64  `json:"id"`
+			Tags struct {
+				Name        string `json:"name"`
+				Housenumber string `json:"addr:housenumber"`
+				Street      string `json:"addr:street"`
+				City        string `json:"addr:city"`
+				State       string `json:"addr:state"`
+				Postcode    string `json:"addr:postcode"`
+				Phone       string `json:"phone"`
+			} `json:"tags"`
+			Lat    float64 `json:"lat"`
+			Lon    float64 `json:"lon"`
+			Center struct {
+				Lat float64 `json:"lat"`
+				Lon float64 `json:"lon"`
+			} `json:"center"`
+		} `json:"elements"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var locations []TacoBellLocation
+	for _, element := range result.Elements {
+		// Get coordinates based on element type
+		nodeLat, nodeLng := element.Lat, element.Lon
+		if element.Type != "node" {
+			// For ways and relations, use center
+			nodeLat, nodeLng = element.Center.Lat, element.Center.Lon
+		}
+
+		// Build address from components
+		address := ""
+		if element.Tags.Housenumber != "" && element.Tags.Street != "" {
+			address = element.Tags.Housenumber + " " + element.Tags.Street
+		}
+		if element.Tags.City != "" {
+			if address != "" {
+				address += ", "
+			}
+			address += element.Tags.City
+		}
+		if element.Tags.State != "" {
+			if address != "" {
+				address += ", "
+			}
+			address += element.Tags.State
+		}
+		if element.Tags.Postcode != "" {
+			if address != "" {
+				address += " "
+			}
+			address += element.Tags.Postcode
+		}
+
+		if address == "" {
+			address = "Address unknown"
+		}
+
+		// Calculate distance
+		distance := haversineDistance(lat, lng, nodeLat, nodeLng)
+
+		// Build unique ID for OSM elements
+		placeID := fmt.Sprintf("osm-%s-%d", element.Type, element.ID)
+
+		locations = append(locations, TacoBellLocation{
+			PlaceID:     placeID,
+			Name:        element.Tags.Name,
+			Address:     address,
+			Distance:    distance,
+			PhoneNumber: element.Tags.Phone,
+			StoreID:     placeID, // Use the OSM ID as a fallback store ID
+		})
+
+		fmt.Printf("Found Taco Bell (OSM): %s at %s (%.2f km)\n",
+			element.Tags.Name, address, distance)
+	}
+
+	return locations, nil
 }
 
 // getPlaceDetails gets additional details for a place
-func (f *ChilitoBurritoFinder) getPlaceDetails(placeID string) (placeDetails, error) {
+func (f *ChilitoBurritoFinder) getPlaceDetails(placeID string) (PlaceDetails, error) {
 	endpoint := "https://maps.googleapis.com/maps/api/place/details/json"
 
 	params := url.Values{}
@@ -535,7 +782,7 @@ func (f *ChilitoBurritoFinder) getPlaceDetails(placeID string) (placeDetails, er
 	// Use the client that might be authenticated
 	resp, err := f.client.Get(endpoint + "?" + params.Encode())
 	if err != nil {
-		return placeDetails{}, err
+		return PlaceDetails{}, err
 	}
 	defer resp.Body.Close()
 
@@ -546,12 +793,64 @@ func (f *ChilitoBurritoFinder) getPlaceDetails(placeID string) (placeDetails, er
 	}
 
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
-		return placeDetails{}, err
+		return PlaceDetails{}, err
 	}
 
-	return placeDetails{
+	return PlaceDetails{
 		PhoneNumber: result.Result.FormattedPhoneNumber,
 	}, nil
+}
+
+// similarAddresses checks if two addresses are similar enough to be considered the same location
+func similarAddresses(addr1, addr2 string) bool {
+	// Normalize both addresses: lowercase, remove punctuation, standardize whitespace
+	normalize := func(s string) string {
+		s = strings.ToLower(s)
+		s = regexp.MustCompile(`[^\w\s]`).ReplaceAllString(s, " ")
+		s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
+		s = strings.TrimSpace(s)
+		return s
+	}
+
+	norm1 := normalize(addr1)
+	norm2 := normalize(addr2)
+
+	// Direct match after normalization
+	if norm1 == norm2 {
+		return true
+	}
+
+	// Check if one is contained in the other
+	if strings.Contains(norm1, norm2) || strings.Contains(norm2, norm1) {
+		return true
+	}
+
+	// Split into components and check for partial matches
+	parts1 := strings.Fields(norm1)
+	parts2 := strings.Fields(norm2)
+
+	// Count matching words
+	matches := 0
+	for _, p1 := range parts1 {
+		if len(p1) <= 2 { // Skip very short words like "a", "an", "of"
+			continue
+		}
+		for _, p2 := range parts2 {
+			if p1 == p2 || (len(p1) > 4 && strings.Contains(p2, p1)) || (len(p2) > 4 && strings.Contains(p1, p2)) {
+				matches++
+				break
+			}
+		}
+	}
+
+	// If we have enough matching words or components, consider it similar
+	// The threshold depends on the length of the address
+	minMatches := 2
+	if len(parts1) > 5 || len(parts2) > 5 {
+		minMatches = 3
+	}
+
+	return matches >= minMatches
 }
 
 // getStoreID gets the Taco Bell store ID which is needed for menu checking
@@ -648,47 +947,6 @@ func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, er
 	return storeID, nil
 }
 
-// similarAddresses checks if two addresses are likely the same location
-func similarAddresses(addr1, addr2 string) bool {
-	// Normalize addresses: remove punctuation, extra spaces, and convert to lowercase
-	normalize := func(s string) string {
-		s = strings.ToLower(s)
-		s = regexp.MustCompile(`[^\w\s]`).ReplaceAllString(s, " ")
-		s = regexp.MustCompile(`\s+`).ReplaceAllString(s, " ")
-		return strings.TrimSpace(s)
-	}
-
-	addr1Norm := normalize(addr1)
-	addr2Norm := normalize(addr2)
-
-	// If one is contained in the other, consider them similar
-	if strings.Contains(addr1Norm, addr2Norm) || strings.Contains(addr2Norm, addr1Norm) {
-		return true
-	}
-
-	// Compare important parts (street number, name, city)
-	words1 := strings.Fields(addr1Norm)
-	words2 := strings.Fields(addr2Norm)
-
-	matches := 0
-	totalWords := math.Max(float64(len(words1)), float64(len(words2)))
-
-	for _, w1 := range words1 {
-		if len(w1) < 2 {
-			continue // Skip very short words
-		}
-		for _, w2 := range words2 {
-			if w1 == w2 || (len(w1) > 4 && strings.Contains(w2, w1)) {
-				matches++
-				break
-			}
-		}
-	}
-
-	// If at least 60% of words match, consider them similar
-	return float64(matches)/totalWords > 0.6
-}
-
 // checkForChilitoBurrito checks if a location has the Chili Cheese Burrito
 func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation) (bool, error) {
 	// URLs to check for menu
@@ -719,6 +977,7 @@ func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation)
 		// Try up to 3 times per URL
 		var resp *http.Response
 		var err error
+		success := false
 
 		for attempt := 0; attempt < 3; attempt++ {
 			req, err := http.NewRequest("GET", menuURL, nil)
@@ -732,29 +991,30 @@ func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation)
 
 			resp, err = client.Do(req)
 			if err == nil && resp.StatusCode == http.StatusOK {
+				success = true
 				break
 			}
 
 			if resp != nil {
 				resp.Body.Close()
+				resp = nil
 			}
 
 			// Wait before retrying
 			time.Sleep(time.Duration(attempt+1) * time.Second)
 		}
 
-		if err != nil || resp == nil {
-			fmt.Printf("Failed to access %s after multiple attempts\n", menuURL)
+		// If all attempts failed
+		if !success {
+			if success {
+				fmt.Printf("Failed to access %s after multiple attempts: %v\n", menuURL, err)
+			} else {
+				fmt.Printf("Failed to access %s after multiple attempts\n", menuURL)
+			}
 			continue
 		}
 
-		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
-			fmt.Printf("Received status %d for %s\n", resp.StatusCode, menuURL)
-			continue
-		}
-
-		// Parse HTML
+		// At this point, we know resp is not nil and the status is OK
 		doc, err := goquery.NewDocumentFromReader(resp.Body)
 		resp.Body.Close()
 
@@ -833,22 +1093,25 @@ func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation)
 	return false, nil
 }
 
-// haversineDistance calculates the distance between two points in kilometers
+// Replace the haversineDistance function with a more accurate implementation
 func haversineDistance(lat1, lng1, lat2, lng2 float64) float64 {
-	const earthRadius = 6371.0 // kilometers
+	const R = 6371 // Earth radius in kilometers
 
 	// Convert latitude and longitude from degrees to radians
-	lat1 = lat1 * (3.14159265359 / 180.0)
-	lng1 = lng1 * (3.14159265359 / 180.0)
-	lat2 = lat2 * (3.14159265359 / 180.0)
-	lng2 = lng2 * (3.14159265359 / 180.0)
+	lat1Rad := lat1 * math.Pi / 180
+	lng1Rad := lng1 * math.Pi / 180
+	lat2Rad := lat2 * math.Pi / 180
+	lng2Rad := lng2 * math.Pi / 180
 
-	dlat := lat2 - lat1
-	dlng := lng2 - lng1
+	// Differences in coordinates
+	dLat := lat2Rad - lat1Rad
+	dLng := lng2Rad - lng1Rad
 
-	a := (1-0.5*dlat*dlat)*(1-0.5*dlng*dlng*0.5*(1-0.25*dlat*dlat)) - 0.5*dlat*dlat
-	c := 2 * 0.5 * (1.5707963267948966 - a)
-	d := earthRadius * c
+	// Haversine formula
+	a := math.Sin(dLat/2)*math.Sin(dLat/2) +
+		math.Cos(lat1Rad)*math.Cos(lat2Rad)*
+			math.Sin(dLng/2)*math.Sin(dLng/2)
+	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 
-	return d
+	return R * c
 }

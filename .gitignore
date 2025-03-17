@@ -1,0 +1,53 @@
+# Notes files
+notes.md
+notes.txt
+*.notes
+NOTES.md
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.bin
+
+# Output of the go command
+*.o
+*.a
+*.test
+
+# Go specific
+/bin/
+/pkg/
+/vendor/
+
+# Dependency directories
+/Godeps/
+
+# Log files
+*.log
+*.log.*
+logs/
+
+# Environment files
+.env
+.env.*
+credentials.json
+
+# Temporary files
+tmp/
+*.tmp
+*.bak
+*.swp
+*~
+
+# IDE specific files
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+
+# OS specific files
+.DS_Store
+Thumbs.db

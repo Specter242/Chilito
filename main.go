@@ -25,7 +25,7 @@ func main() {
 		"client_secret_150000384307-ndkt6ot3smdl37pdj1vqk84hffgfk9bg.apps.googleusercontent.com.json")
 
 	flag.StringVar(&address, "address", "", "Address to search from (required)")
-	flag.IntVar(&radius, "radius", 50000, "Search radius in meters (default 50km)")
+	flag.IntVar(&radius, "radius", 100000, "Search radius in meters (default 100km)")
 	flag.BoolVar(&verbose, "verbose", false, "Enable verbose output")
 	flag.IntVar(&debugDelay, "delay", 0, "Add delay between API calls in seconds (for debugging)")
 	flag.BoolVar(&useOAuth, "oauth", false, "Use OAuth authentication instead of API key")
@@ -84,5 +84,6 @@ func main() {
 		fmt.Printf("Phone: %s\n", result.PhoneNumber)
 	} else {
 		fmt.Println("\nNo Taco Bell locations with Chilito Burrito found within the search radius.")
+		fmt.Println("Try increasing the search radius or using a different starting address.")
 	}
 }

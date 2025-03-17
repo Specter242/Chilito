@@ -49,7 +49,7 @@ go build
 ### Options
 
 - `--address`: Your starting location (required)
-- `--radius`: Search radius in meters (default: 50000, which is 50km)
+- `--radius`: Search radius in meters (default: 100000, which is 100km)
 - `--verbose`: Enable verbose output for debugging
 - `--oauth`: Use OAuth2 authentication instead of API key
 - `--credentials`: Path to OAuth client credentials JSON file (defaults to user's Downloads folder)
@@ -76,6 +76,11 @@ If you encounter geocoding errors:
 - Try adding more details to your address (street, city, state, zip)
 - Use the `--verbose` flag to see more detailed error messages
 - For international addresses, include the country name
+
+If no Taco Bell locations are found:
+- Try increasing the search radius with `--radius` (measured in meters)
+- Verify your address is properly geocoded by checking the coordinates in the output
+- Some rural areas may require extremely large search radii to find Taco Bell locations
 
 ## Implementation Details
 
