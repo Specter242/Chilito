@@ -241,9 +241,8 @@ func (f *ChilitoBurritoFinder) openStreetMapGeocode(address string) (float64, fl
 
 // mapboxGeocode attempts to geocode using Mapbox API (as another alternative)
 func (f *ChilitoBurritoFinder) mapboxGeocode(address string) (float64, float64, error) {
-	// NOTE: This is using a public token which has usage limits
-	// For a real app, you would use your own token
-	token := "pk.eyJ1IjoiZGVtb3VzZXIiLCJhIjoiY2x0cnZ5YmFtMDVvczJtbnloY3Z4eWJuNiJ9.5qKH_GvrhsGMzDFE8vNMww"
+	// Using a placeholder token - in production you'd use your own token
+	token := "MAPBOX_TOKEN_PLACEHOLDER" // Changed from actual token to a placeholder
 	encodedAddress := url.QueryEscape(address)
 
 	endpoint := fmt.Sprintf("https://api.mapbox.com/geocoding/v5/mapbox.places/%s.json?access_token=%s",

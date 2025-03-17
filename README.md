@@ -1,93 +1,63 @@
-# Chilito - Taco Bell Chili Cheese Burrito Finder
+# Chilito Burrito Finder
 
-This Go application helps you locate the nearest Taco Bell serving the legendary Chili Cheese Burrito (aka Chilito).
+A command-line utility for finding Taco Bell locations that serve the elusive Chili Cheese Burrito (aka "Chilito").
 
-## Prerequisites
+## About the Chilito
 
-- Go 1.16 or higher
-- Either:
-  - Google API key with Places API and Geocoding API enabled, or
-  - Google OAuth2 client credentials (more reliable)
+The Chili Cheese Burrito, affectionately known as the "Chilito" by fans, was a staple on the Taco Bell menu in the 1990s. Over time, it was removed from the national menu but continues to be available at select locations. This utility helps you find those locations.
 
-## Authentication Setup
+## Features
 
-### Option 1: API Key (Basic)
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Navigate to your project and select "APIs & Services" > "Credentials"
-3. Find your API key and click "Edit"
-4. Under "API restrictions", add both "Places API" and "Geocoding API"
-
-### Option 2: OAuth2 (Recommended)
-1. Go to the [Google Cloud Console](https://console.cloud.google.com/)
-2. Navigate to your project and select "APIs & Services" > "Credentials"
-3. Click "Create Credentials" > "OAuth client ID"
-4. Select "Desktop app" for the application type
-5. Download the JSON file with client credentials
-6. Use the `--oauth` flag when running the application
+- Search for Taco Bell locations near a specified address 
+- Automatically checks menu items to determine if a location serves the Chili Cheese Burrito
+- Uses Taco Bell's website APIs to get accurate location information
+- Falls back to alternative geocoding and location search when needed
+- Pure Go implementation with no external API keys required
 
 ## Installation
+
+### From Source
+
+Clone the repository and build the executable:
 
 ```bash
 git clone https://github.com/yourusername/chilito.git
 cd chilito
-go mod tidy
 go build
 ```
 
 ## Usage
 
-### Basic authentication with API key:
-```bash
-./chilito --address="123 Main St, Anytown, USA"
-```
+Run the utility with the following command:
 
-### OAuth2 authentication (recommended):
 ```bash
-./chilito --address="123 Main St, Anytown, USA" --oauth
+./chilito -address "123 Main St, Anytown, USA" -radius 50000
 ```
 
 ### Options
 
-- `--address`: Your starting location (required)
-- `--radius`: Search radius in meters (default: 100000, which is 100km)
-- `--verbose`: Enable verbose output for debugging
-- `--oauth`: Use OAuth2 authentication instead of API key
-- `--credentials`: Path to OAuth client credentials JSON file (defaults to user's Downloads folder)
+- `-address`: The address to search from (required)
+- `-radius`: Search radius in meters (default: 100,000 meters or about 62 miles)
+- `-verbose`: Enable verbose output for debugging
+- `-delay`: Add delay between API calls in seconds (for debugging)
+
+### Example
+
+```bash
+./chilito -address "1000 Davis Rd. W Fairmount, GA 30139" -radius 100000
+```
 
 ## How It Works
 
-1. The application geocodes your address to get latitude/longitude
-2. It searches for Taco Bell locations near your coordinates
-3. For each location (sorted by distance), it checks the menu for the Chili Cheese Burrito
-4. When a location serving the burrito is found, it returns the details of that location
+1. The utility first converts your address to geographic coordinates using Taco Bell's geocoding API
+2. It then searches for Taco Bell locations within the specified radius of those coordinates
+3. For each location found, it checks the menu for the Chilito/Chili Cheese Burrito using web scraping
+4. Once a location with the Chilito is found, details are displayed including address and distance
 
-## Notes
+## Contributing
 
-- The application includes advanced scraping techniques to detect the Chili Cheese Burrito on Taco Bell menus
-- It handles address similarity matching to properly identify store locations
-- Multiple fallback methods are implemented to maximize the chances of finding the Chilito
-- Includes backup geocoding via OpenStreetMap if Google geocoding fails
-- The search process may take a few minutes as it needs to check each Taco Bell location's menu
-
-## Troubleshooting
-
-If you encounter geocoding errors:
-- Try using the OAuth authentication method with `--oauth` flag
-- Try adding more details to your address (street, city, state, zip)
-- Use the `--verbose` flag to see more detailed error messages
-- For international addresses, include the country name
-
-If no Taco Bell locations are found:
-- Try increasing the search radius with `--radius` (measured in meters)
-- Verify your address is properly geocoded by checking the coordinates in the output
-- Some rural areas may require extremely large search radii to find Taco Bell locations
-
-## Implementation Details
-
-- Uses the Google Places API to find nearby Taco Bell restaurants
-- Implements web scraping with goquery to check Taco Bell menus
-- The search is conducted in order of proximity, so the nearest location is identified first
+Contributions are welcome! If you know of specific Taco Bell locations that serve the Chili Cheese Burrito, you can add them to the knownChilitoLocations map in the finder.go file.
 
 ## License
 
-MIT
+[MIT License](LICENSE)
