@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/yourusername/chilito/finder"
@@ -16,20 +15,11 @@ func main() {
 	var radius int
 	var verbose bool
 	var debugDelay int
-	var useOAuth bool
-	var credentialsPath string
-	const apiKey = "AIzaSyASju5Gu_8bId7mXVzV-zflf2vxJN5LqhU"
-
-	// Default credentials path
-	defaultCredentialsPath := filepath.Join(os.Getenv("USERPROFILE"), "Downloads",
-		"client_secret_150000384307-ndkt6ot3smdl37pdj1vqk84hffgfk9bg.apps.googleusercontent.com.json")
 
 	flag.StringVar(&address, "address", "", "Address to search from (required)")
 	flag.IntVar(&radius, "radius", 100000, "Search radius in meters (default 100km)")
 	flag.BoolVar(&verbose, "verbose", false, "Enable verbose output")
 	flag.IntVar(&debugDelay, "delay", 0, "Add delay between API calls in seconds (for debugging)")
-	flag.BoolVar(&useOAuth, "oauth", false, "Use OAuth authentication instead of API key")
-	flag.StringVar(&credentialsPath, "credentials", defaultCredentialsPath, "Path to OAuth credentials JSON file")
 	flag.Parse()
 
 	if address == "" {
@@ -47,20 +37,8 @@ func main() {
 
 	fmt.Printf("Searching for Chili Cheese Burrito near: %s (within %d meters)\n", address, radius)
 
-	// Create the finder with either API key or OAuth
-	var chilitoFinder *finder.ChilitoBurritoFinder
-	var err error
-
-	if useOAuth {
-		fmt.Printf("Using OAuth authentication with credentials from: %s\n", credentialsPath)
-		chilitoFinder, err = finder.NewChilitoBurritoFinderWithOAuth(credentialsPath)
-		if err != nil {
-			log.Fatalf("Failed to create OAuth authenticated finder: %v", err)
-		}
-	} else {
-		fmt.Println("Using API key authentication")
-		chilitoFinder = finder.NewChilitoBurritoFinder(apiKey)
-	}
+	// Create the finder (simplified to remove OAuth and API key options)
+	chilitoFinder := finder.NewChilitoBurritoFinder()
 
 	// If debug delay is set, display a message
 	if debugDelay > 0 {

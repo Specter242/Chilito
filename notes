@@ -1,6 +1,6 @@
-Handle proper authentication with the Taco Bell website/API
-Implement proper HTML parsing of the menu
-Consider caching results to avoid unnecessary API calls
-You'll need a Google API key with Places API enabled to use this application.
+You could also consider:
 
-The checkForChilitoBurrito function is a placeholder - Taco Bell doesn't provide a public API for menus, so you'd need to either scrape their website or use a third-party food delivery API to get menu information.
+Implementing a cache for results to avoid repeated checks
+Adding more varied user agents to avoid rate limiting
+Using a headless browser like Playwright or Puppeteer for more reliable web scraping
+Consider caching results to avoid unnecessary API calls
