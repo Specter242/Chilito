@@ -18,7 +18,7 @@ func main() {
 	var debugDelay int
 	var useOAuth bool
 	var credentialsPath string
-	const apiKey = "AIzaSyAiMObdV5w-zFahCX-8kelmElJqkSgEWjU"
+	const apiKey = "AIzaSyASju5Gu_8bId7mXVzV-zflf2vxJN5LqhU"
 
 	// Default credentials path
 	defaultCredentialsPath := filepath.Join(os.Getenv("USERPROFILE"), "Downloads",

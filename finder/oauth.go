@@ -41,7 +41,7 @@ func GetAuthenticatedClient(credentialsPath string) (*http.Client, error) {
 		RedirectURL:  "http://localhost",
 		Scopes: []string{
 			"https://www.googleapis.com/auth/places",
-			"https://www.googleapis.com/auth/geocoding",
+			//"https://www.googleapis.com/auth/geocoding",
 		},
 		Endpoint: google.Endpoint,
 	}

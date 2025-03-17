@@ -34,17 +34,19 @@ type PlaceDetails struct {
 
 // ChilitoBurritoFinder manages searching for the Chilito Burrito
 type ChilitoBurritoFinder struct {
-	apiKey   string
-	client   *http.Client
-	useOAuth bool
+	apiKey         string
+	client         *http.Client
+	useOAuth       bool
+	useTacoBellAPI bool // New field to control which API to use
 }
 
 // NewChilitoBurritoFinder creates a new finder instance
 func NewChilitoBurritoFinder(apiKey string) *ChilitoBurritoFinder {
 	return &ChilitoBurritoFinder{
-		apiKey:   apiKey,
-		client:   &http.Client{Timeout: 20 * time.Second},
-		useOAuth: false,
+		apiKey:         apiKey,
+		client:         &http.Client{Timeout: 20 * time.Second},
+		useOAuth:       false,
+		useTacoBellAPI: true, // Default to using Taco Bell API
 	}
 }
 
@@ -56,8 +58,9 @@ func NewChilitoBurritoFinderWithOAuth(credentialsPath string) (*ChilitoBurritoFi
 	}
 
 	return &ChilitoBurritoFinder{
-		client:   client,
-		useOAuth: true,
+		client:         client,
+		useOAuth:       true,
+		useTacoBellAPI: true, // Default to using Taco Bell API
 	}, nil
 }
 
@@ -117,7 +120,8 @@ func (f *ChilitoBurritoFinder) FindNearestChilitoBurrito(address string, radius 
 func (f *ChilitoBurritoFinder) geocodeAddress(address string) (float64, float64, error) {
 	// Try all available geocoding methods until one works
 	methods := []func(string) (float64, float64, error){
-		f.placesAPIGeocode, // Add this new method as first priority
+		f.tacoBellGeocode, // Add Taco Bell geocoding as the top priority
+		f.placesAPIGeocode,
 		f.googleGeocode,
 		f.openStreetMapGeocode,
 		f.mapboxGeocode,
@@ -135,6 +139,57 @@ func (f *ChilitoBurritoFinder) geocodeAddress(address string) (float64, float64,
 	}
 
 	return 0, 0, fmt.Errorf("all geocoding methods failed - last error: %w", lastErr)
+}
+
+// tacoBellGeocode attempts to geocode using Taco Bell's official API
+func (f *ChilitoBurritoFinder) tacoBellGeocode(address string) (float64, float64, error) {
+	fmt.Printf("Using Taco Bell's official geocoding API for: %s\n", address)
+
+	// Use Taco Bell's official geocoding API
+	encodedAddress := url.QueryEscape(address)
+	requestURL := fmt.Sprintf("https://api.tacobell.com/location/v1/%s", encodedAddress)
+
+	// Create request with headers
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return 0, 0, fmt.Errorf("error creating request: %w", err)
+	}
+
+	// Set headers to mimic browser behavior
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://www.tacobell.com/")
+
+	// Send the request
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return 0, 0, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0, 0, fmt.Errorf("taco bell API returned status code %d", resp.StatusCode)
+	}
+
+	// Parse the JSON response
+	var result struct {
+		Geometry struct {
+			Lat float64 `json:"lat"`
+			Lng float64 `json:"lng"`
+		} `json:"geometry"`
+		Success bool `json:"success"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return 0, 0, fmt.Errorf("error parsing JSON response: %w", err)
+	}
+
+	if !result.Success {
+		return 0, 0, fmt.Errorf("taco Bell API geocoding was not successful")
+	}
+
+	fmt.Printf("Taco Bell API geocoding successful: %f, %f\n", result.Geometry.Lat, result.Geometry.Lng)
+	return result.Geometry.Lat, result.Geometry.Lng, nil
 }
 
 // placesAPIGeocode attempts to geocode using Google Places API's findplacefromtext
@@ -407,6 +462,19 @@ func (f *ChilitoBurritoFinder) findTacoBellLocations(lat, lng float64, radius in
 	fmt.Printf("Searching for Taco Bell locations near coordinates: %f, %f (radius: %d meters)\n",
 		lat, lng, radius)
 
+	// Try Taco Bell website API first if enabled
+	if f.useTacoBellAPI {
+		locations, err := f.tacoBellWebsiteSearch(lat, lng, radius)
+		if err == nil && len(locations) > 0 {
+			fmt.Printf("Found %d Taco Bell locations using Taco Bell official API\n", len(locations))
+			return locations, nil
+		}
+		if err != nil {
+			fmt.Printf("Taco Bell official API search error: %v\n", err)
+		}
+	}
+
+	// Fall back to Google APIs if not using Taco Bell API or if Taco Bell API failed
 	// First try the standard Google Places API search
 	locations, err := f.googlePlacesSearch(lat, lng, radius)
 	if err != nil {
@@ -855,6 +923,16 @@ func similarAddresses(addr1, addr2 string) bool {
 
 // getStoreID gets the Taco Bell store ID which is needed for menu checking
 func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, error) {
+	// If we already have a store ID from the official API, use it
+	if location.StoreID != "" && len(location.StoreID) > 0 && location.StoreID != location.PlaceID {
+		return location.StoreID, nil
+	}
+
+	// If we have a store number format (usually 6 digits), use that
+	if _, err := strconv.Atoi(location.PlaceID); err == nil && len(location.PlaceID) == 6 {
+		return location.PlaceID, nil
+	}
+
 	// Format the address for URL query
 	formattedAddress := url.QueryEscape(location.Address)
 	locationURL := fmt.Sprintf("https://www.tacobell.com/locations/search?q=%s", formattedAddress)
@@ -878,7 +956,7 @@ func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, er
 	// Execute request
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("error accessing Taco Bell location search: %w", err)
+		return "", err
 	}
 	defer resp.Body.Close()
 
@@ -910,9 +988,9 @@ func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, er
 	if storeID == "" {
 		doc.Find("script").Each(func(i int, s *goquery.Selection) {
 			script := s.Text()
-			if strings.Contains(script, "storeId") || strings.Contains(script, "store_id") {
+			if strings.Contains(script, "storeId") || strings.Contains(script, "store_id") || strings.Contains(script, "storeNumber") {
 				// Use regex to find store ID
-				re := regexp.MustCompile(`(?:storeId|store_id)[\s:"'=]+(\d+)`)
+				re := regexp.MustCompile(`(?:storeId|store_id|storeNumber)[\s:"'=]+(\d+)`)
 				matches := re.FindStringSubmatch(script)
 				if len(matches) >= 2 {
 					storeID = matches[1]
@@ -923,14 +1001,14 @@ func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, er
 
 	// Third approach: Look for it in URLs on the page
 	if storeID == "" {
-		doc.Find("a[href*='store='], a[href*='storeId=']").Each(func(i int, s *goquery.Selection) {
+		doc.Find("a[href*='store='], a[href*='storeId='], a[href*='storeNumber=']").Each(func(i int, s *goquery.Selection) {
 			href, exists := s.Attr("href")
 			if !exists {
 				return
 			}
 
 			// Extract store ID from URL
-			re := regexp.MustCompile(`(?:store|storeId)=(\d+)`)
+			re := regexp.MustCompile(`(?:store|storeId|storeNumber)=(\d+)`)
 			matches := re.FindStringSubmatch(href)
 			if len(matches) >= 2 {
 				storeID = matches[1]
@@ -949,6 +1027,15 @@ func (f *ChilitoBurritoFinder) getStoreID(location TacoBellLocation) (string, er
 
 // checkForChilitoBurrito checks if a location has the Chili Cheese Burrito
 func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation) (bool, error) {
+	// First, try to check the online menu using the store API
+	hasChilito, err := f.checkChilitoUsingOfficialAPI(location)
+	if err == nil {
+		return hasChilito, nil
+	}
+
+	fmt.Printf("Official API check failed, falling back to web scraping for %s: %v\n",
+		location.Name, err)
+
 	// URLs to check for menu
 	urls := []string{
 		fmt.Sprintf("https://www.tacobell.com/food/menu?store=%s", location.StoreID),
@@ -1006,11 +1093,7 @@ func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation)
 
 		// If all attempts failed
 		if !success {
-			if success {
-				fmt.Printf("Failed to access %s after multiple attempts: %v\n", menuURL, err)
-			} else {
-				fmt.Printf("Failed to access %s after multiple attempts\n", menuURL)
-			}
+			fmt.Printf("Failed to access %s after multiple attempts\n", menuURL)
 			continue
 		}
 
@@ -1074,22 +1157,6 @@ func (f *ChilitoBurritoFinder) checkForChilitoBurrito(location TacoBellLocation)
 		}
 	}
 
-	// Alternative approach: check the "Chilito Finder" website (if it exists)
-	// This is a hypothetical site that might track Chili Cheese Burrito availability
-	resp, err := http.Get(fmt.Sprintf("https://chilicheeseburrito.com/locations?id=%s", location.StoreID))
-	if err == nil && resp.StatusCode == http.StatusOK {
-		doc, err := goquery.NewDocumentFromReader(resp.Body)
-		resp.Body.Close()
-
-		if err == nil {
-			// Look for indications this location has the Chilito
-			available := strings.Contains(strings.ToLower(doc.Text()), "available")
-			if available {
-				return true, nil
-			}
-		}
-	}
-
 	return false, nil
 }
 
@@ -1114,4 +1181,181 @@ func haversineDistance(lat1, lng1, lat2, lng2 float64) float64 {
 	c := 2 * math.Atan2(math.Sqrt(a), math.Sqrt(1-a))
 
 	return R * c
+}
+
+// tacoBellWebsiteSearch finds locations using Taco Bell's official API
+func (f *ChilitoBurritoFinder) tacoBellWebsiteSearch(lat, lng float64, radius int) ([]TacoBellLocation, error) {
+	fmt.Printf("Searching for Taco Bell locations using official API near: %f, %f\n", lat, lng)
+
+	// Build URL for the Taco Bell stores API
+	requestURL := fmt.Sprintf("https://www.tacobell.com/tacobellwebservices/v4/tacobell/stores?latitude=%f&longitude=%f&_=%d",
+		lat, lng, time.Now().UnixNano()/int64(time.Millisecond))
+
+	// Create request with appropriate headers
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://www.tacobell.com/")
+
+	// Send the request
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("taco bell API returned status code %d", resp.StatusCode)
+	}
+
+	// Read and parse the response
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("error reading response body: %w", err)
+	}
+
+	// Parse the JSON
+	var storeData struct {
+		NearByStores []struct {
+			StoreNumber string `json:"storeNumber"`
+			PhoneNumber string `json:"phoneNumber"`
+			Address     struct {
+				Line1      string `json:"line1"`
+				Line2      string `json:"line2"`
+				Town       string `json:"town"`
+				PostalCode string `json:"postalCode"`
+				Region     struct {
+					Isocode string `json:"isocode"`
+				} `json:"region"`
+			} `json:"address"`
+			GeoPoint struct {
+				Latitude  float64 `json:"latitude"`
+				Longitude float64 `json:"longitude"`
+			} `json:"geoPoint"`
+			FormattedDistance string `json:"formattedDistance"`
+		} `json:"nearByStores"`
+	}
+
+	if err := json.Unmarshal(body, &storeData); err != nil {
+		return nil, fmt.Errorf("error parsing JSON data: %w", err)
+	}
+
+	// Convert to our TacoBellLocation format
+	var locations []TacoBellLocation
+	for _, store := range storeData.NearByStores {
+		// Format address
+		address := store.Address.Line1
+		if store.Address.Line2 != "" && store.Address.Line2 != "null" {
+			address += ", " + store.Address.Line2
+		}
+
+		// Add town and region
+		address += ", " + store.Address.Town
+		regionCode := ""
+		if strings.HasPrefix(store.Address.Region.Isocode, "US-") {
+			regionCode = strings.TrimPrefix(store.Address.Region.Isocode, "US-")
+		} else {
+			regionCode = store.Address.Region.Isocode
+		}
+		address += ", " + regionCode + " " + store.Address.PostalCode
+
+		// Parse distance from formatted string (e.g., "0.25 Miles")
+		var distance float64
+		if distStr := strings.TrimSuffix(strings.TrimSpace(store.FormattedDistance), " Miles"); distStr != "" {
+			if dist, err := strconv.ParseFloat(distStr, 64); err == nil {
+				// Convert miles to kilometers
+				distance = dist * 1.60934
+			} else {
+				// Calculate distance if parsing fails
+				distance = haversineDistance(lat, lng, store.GeoPoint.Latitude, store.GeoPoint.Longitude)
+			}
+		} else {
+			// Calculate distance if formatted distance is not available
+			distance = haversineDistance(lat, lng, store.GeoPoint.Latitude, store.GeoPoint.Longitude)
+		}
+
+		locations = append(locations, TacoBellLocation{
+			PlaceID:     store.StoreNumber,
+			Name:        "Taco Bell " + store.StoreNumber,
+			Address:     address,
+			Distance:    distance,
+			PhoneNumber: store.PhoneNumber,
+			StoreID:     store.StoreNumber,
+		})
+
+		fmt.Printf("Found Taco Bell #%s at %s (%.2f km)\n",
+			store.StoreNumber, address, distance)
+	}
+
+	// Filter results based on radius (convert radius from meters to km)
+	radiusKm := float64(radius) / 1000.0
+	var filteredLocations []TacoBellLocation
+	for _, loc := range locations {
+		if loc.Distance <= radiusKm {
+			filteredLocations = append(filteredLocations, loc)
+		}
+	}
+
+	fmt.Printf("Found %d Taco Bell locations within %.2f km\n", len(filteredLocations), radiusKm)
+	return filteredLocations, nil
+}
+
+// checkChilitoUsingOfficialAPI checks if a store has the Chili Cheese Burrito using official API
+func (f *ChilitoBurritoFinder) checkChilitoUsingOfficialAPI(location TacoBellLocation) (bool, error) {
+	fmt.Printf("Checking menu for store #%s using official API\n", location.StoreID)
+
+	// API endpoint for menu items
+	requestURL := fmt.Sprintf("https://www.tacobell.com/tacobellwebservices/v4/tacobell/products/menu?storeNumber=%s&_=%d",
+		location.StoreID, time.Now().UnixNano()/int64(time.Millisecond))
+
+	// Create request with appropriate headers
+	req, err := http.NewRequest("GET", requestURL, nil)
+	if err != nil {
+		return false, fmt.Errorf("error creating request: %w", err)
+	}
+
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/96.0.4664.110 Safari/537.36")
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("Referer", "https://www.tacobell.com/")
+
+	// Send the request
+	resp, err := f.client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("HTTP request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("taco bell API returned status code %d", resp.StatusCode)
+	}
+
+	// Read the response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("error reading response body: %w", err)
+	}
+
+	// Check for Chili Cheese Burrito in the menu data
+	bodyText := strings.ToLower(string(body))
+	searchTerms := []string{
+		"chili cheese burrito",
+		"chilito",
+		"chili burrito",
+		"ccb",
+		"chili cheese wrap",
+	}
+
+	for _, term := range searchTerms {
+		if strings.Contains(bodyText, term) {
+			fmt.Printf("Found '%s' on the menu at store #%s!\n", term, location.StoreID)
+			return true, nil
+		}
+	}
+
+	fmt.Printf("Chili Cheese Burrito not found at store #%s\n", location.StoreID)
+	return false, nil
 }
