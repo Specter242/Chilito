@@ -44,7 +44,7 @@ Run the utility with the following command:
 ### Example
 
 ```bash
-./chilito -address "1000 Davis Rd. W Fairmount, GA 30139" -radius 100000
+./chilito -address "Alpharetta, GA 30004" -radius 100000
 ```
 
 ## How It Works
